@@ -4,34 +4,45 @@ from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy.orm import Session
 from sqlalchemy.exc import IntegrityError
 
-from app.api.deps import get_current_staff, get_current_user
+from app.api.deps import forbidden, get_current_admin, get_current_admin_or_staff, get_current_user, is_role
 from app.crud.crud_doctor import doctor
+from app.db.models import Appointment, Availability as AvailabilityModel, User
 from app.schemas.doctor import Doctor, DoctorCreate, DoctorUpdate, DoctorWithAvailability, AvailabilityCreate
-from app.schemas.user import User
+from app.schemas.user import UserRole
 from app.db.session import get_db
 
 router = APIRouter()
 
+
+def _ensure_can_manage_doctor(current_user: User, doctor_id: int) -> None:
+    """Admins and staff manage every doctor; a doctor manages only their own profile."""
+    if is_role(current_user, UserRole.ADMIN, UserRole.STAFF):
+        return
+    if is_role(current_user, UserRole.DOCTOR) and current_user.reference_id == doctor_id:
+        return
+    raise forbidden()
+
+
 @router.get("/", response_model=List[Doctor])
 def read_doctors(
     db: Session = Depends(get_db),
-    skip: int = 0,
-    limit: int = 100,
+    skip: int = Query(0, ge=0),
+    limit: int = Query(100, ge=1, le=100),
 ) -> Any:
     """
     Retrieve doctors.
     """
-    doctors = doctor.get_multi(db, skip=skip, limit=limit)
-    return doctors
+    return doctor.get_multi(db, skip=skip, limit=limit)
 
 @router.post("/", response_model=Doctor)
 def create_doctor(
     *,
     db: Session = Depends(get_db),
     doctor_in: DoctorCreate,
+    current_user: User = Depends(get_current_admin_or_staff),
 ) -> Any:
     """
-    Create new doctor.
+    Create new doctor (staff and admins).
     """
     existing_doctor = doctor.get_by_email(db, email=doctor_in.email)
     if existing_doctor:
@@ -49,6 +60,17 @@ def create_doctor(
             detail="Duplicate doctor entry or invalid data."
         )
     return doctor_obj
+
+@router.get("/specialization/{specialization}", response_model=List[Doctor])
+def get_doctors_by_specialization(
+    *,
+    db: Session = Depends(get_db),
+    specialization: str,
+) -> Any:
+    """
+    Get doctors by specialization (case-insensitive).
+    """
+    return doctor.get_by_specialization(db, specialization=specialization)
 
 @router.get("/{id}", response_model=DoctorWithAvailability)
 def read_doctor(
@@ -70,10 +92,12 @@ def update_doctor(
     db: Session = Depends(get_db),
     id: int,
     doctor_in: DoctorUpdate,
+    current_user: User = Depends(get_current_user),
 ) -> Any:
     """
-    Update a doctor.
+    Update a doctor (the doctor themself, staff or admins).
     """
+    _ensure_can_manage_doctor(current_user, id)
     doctor_obj = doctor.get(db, id=id)
     if not doctor_obj:
         raise HTTPException(status_code=404, detail="Doctor not found")
@@ -101,23 +125,25 @@ def delete_doctor(
     *,
     db: Session = Depends(get_db),
     id: int,
+    current_user: User = Depends(get_current_admin),
 ) -> Any:
     """
-    Delete a doctor.
+    Delete a doctor and their availability (admins only). Doctors with
+    appointments cannot be deleted.
     """
     doctor_obj = doctor.get(db, id=id)
     if not doctor_obj:
         raise HTTPException(status_code=404, detail="Doctor not found")
 
-    try:
-        doctor_obj = doctor.remove(db, id=id)
-    except IntegrityError as e:
-        db.rollback()
+    if db.query(Appointment.id).filter(Appointment.doctor_id == id).first():
         raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Cannot delete doctor with existing dependencies."
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Cannot delete doctor with existing appointments."
         )
-    return doctor_obj
+
+    result = Doctor.model_validate(doctor_obj)
+    doctor.remove(db, id=id)
+    return result
 
 @router.post("/{id}/availability", response_model=DoctorWithAvailability)
 def add_doctor_availability(
@@ -125,10 +151,12 @@ def add_doctor_availability(
     db: Session = Depends(get_db),
     id: int,
     availability_in: AvailabilityCreate,
+    current_user: User = Depends(get_current_user),
 ) -> Any:
     """
-    Add availability for a doctor.
+    Add a weekly availability window for a doctor (times are UTC).
     """
+    _ensure_can_manage_doctor(current_user, id)
     doctor_obj = doctor.get(db, id=id)
     if not doctor_obj:
         raise HTTPException(status_code=404, detail="Doctor not found")
@@ -143,16 +171,22 @@ def add_doctor_availability(
         )
     return doctor_obj
 
-@router.get("/specialization/{specialization}", response_model=List[Doctor])
-def get_doctors_by_specialization(
+@router.delete("/{id}/availability/{availability_id}", response_model=DoctorWithAvailability)
+def delete_doctor_availability(
     *,
     db: Session = Depends(get_db),
-    specialization: str,
+    id: int,
+    availability_id: int,
+    current_user: User = Depends(get_current_user),
 ) -> Any:
     """
-    Get doctors by specialization.
+    Remove an availability window from a doctor.
     """
-    doctors = doctor.get_by_specialization(db, specialization=specialization)
-    if not doctors:
-        return []
-    return doctors
+    _ensure_can_manage_doctor(current_user, id)
+    availability_obj = db.get(AvailabilityModel, availability_id)
+    if not availability_obj or availability_obj.doctor_id != id:
+        raise HTTPException(status_code=404, detail="Availability not found")
+
+    db.delete(availability_obj)
+    db.commit()
+    return doctor.get_with_availability(db, id=id)
