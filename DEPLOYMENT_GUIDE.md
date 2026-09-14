@@ -43,13 +43,8 @@ CMD ["gunicorn", "app.main:app", "-k", "uvicorn.workers.UvicornWorker"]
    ```
 
 ## Monitoring
-- Prometheus metrics endpoint: `/metrics`
+- Liveness/readiness endpoint: `/health` (a Prometheus `/metrics` endpoint is not implemented yet)
 - CloudWatch alarms for:
   - Database connection pool usage
   - API error rate (>5%)
   - CPU utilization (>75%)
-```
-
-# SECURITY.md
-
-```markdown
