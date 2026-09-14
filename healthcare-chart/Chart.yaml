@@ -1,0 +1,12 @@
+apiVersion: v2
+name: healthcare-chart
+description: Helm chart for Healthcare Appointment System
+type: application
+version: 1.0.0
+appVersion: "1.0.0"
+keywords:
+  - healthcare
+  - fastapi
+  - kubernetes
+maintainers:
+  - name: DevOps Team

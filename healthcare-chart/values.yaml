@@ -1,0 +1,33 @@
+# Global settings
+namespace: healthcare
+environment: production
+
+# Application settings
+app:
+  name: healthcare-app
+  image: healthcare-app:latest
+  replicas: 2
+  port: 8000
+
+# Service settings
+service:
+  name: healthcare-service
+  type: NodePort
+  port: 80
+  nodePort: 30000
+
+# Resource limits
+resources:
+  requests:
+    memory: "128Mi"
+    cpu: "100m"
+  limits:
+    memory: "256Mi"
+    cpu: "200m"
+
+# Configuration
+config:
+  databaseUrl: "postgresql://healthcare_user:postgres123@db:5432/healthcare_db"
+  redisUrl: "redis://redis:6379/0"
+  rabbitmqUrl: "amqp://admin:admin123@rabbitmq:5672/"
+  secretKey: "mysecretkey123456"

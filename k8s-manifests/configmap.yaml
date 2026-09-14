@@ -1,0 +1,10 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: healthcare-config
+  namespace: healthcare
+data:
+  DATABASE_URL: "postgresql://healthcare_user:postgres123@db:5432/healthcare_db"
+  REDIS_URL: "redis://redis:6379/0"
+  RABBITMQ_URL: "amqp://admin:admin123@rabbitmq:5672/"
+  SECRET_KEY: "mysecretkey123456"

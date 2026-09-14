@@ -1,0 +1,275 @@
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: healthcare
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: app-secrets
+  namespace: healthcare
+type: Opaque
+stringData:
+  DB_PASSWORD: "healthcare_pass"
+  SECRET_KEY: "super-secret-change-me-123456789"
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: db-url
+  namespace: healthcare
+type: Opaque
+stringData:
+  DATABASE_URL: "postgresql://healthcare_user:healthcare_pass@db:5432/healthcare_db"
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: rabbitmq-url
+  namespace: healthcare
+type: Opaque
+stringData:
+  RABBITMQ_URL: "amqp://guest:guest@rabbitmq:5672/"
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: smtp-secrets
+  namespace: healthcare
+type: Opaque
+stringData:
+  SMTP_SERVER: "smtp.example.com"
+  SMTP_PORT: "587"
+  SMTP_USERNAME: "user"
+  SMTP_PASSWORD: "password"
+  EMAIL_FROM: "noreply@example.com"
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: db
+  namespace: healthcare
+spec:
+  selector:
+    app: db
+  ports:
+    - port: 5432
+      targetPort: 5432
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: db
+  namespace: healthcare
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: db
+  template:
+    metadata:
+      labels:
+        app: db
+    spec:
+      containers:
+        - name: postgres
+          image: postgres:15-alpine
+          ports:
+            - containerPort: 5432
+          env:
+            - name: POSTGRES_USER
+              value: "healthcare_user"
+            - name: POSTGRES_DB
+              value: "healthcare_db"
+            - name: POSTGRES_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: app-secrets
+                  key: DB_PASSWORD
+          readinessProbe:
+            exec:
+              command:
+                ["sh", "-c", "pg_isready -U healthcare_user -d healthcare_db"]
+            initialDelaySeconds: 10
+            periodSeconds: 10
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: redis
+  namespace: healthcare
+spec:
+  selector:
+    app: redis
+  ports:
+    - port: 6379
+      targetPort: 6379
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: redis
+  namespace: healthcare
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: redis
+  template:
+    metadata:
+      labels:
+        app: redis
+    spec:
+      containers:
+        - name: redis
+          image: redis:7-alpine
+          ports:
+            - containerPort: 6379
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: rabbitmq
+  namespace: healthcare
+spec:
+  selector:
+    app: rabbitmq
+  ports:
+    - name: amqp
+      port: 5672
+      targetPort: 5672
+    - name: mgmt
+      port: 15672
+      targetPort: 15672
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: rabbitmq
+  namespace: healthcare
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: rabbitmq
+  template:
+    metadata:
+      labels:
+        app: rabbitmq
+    spec:
+      containers:
+        - name: rabbitmq
+          image: rabbitmq:3.12-management-alpine
+          ports:
+            - containerPort: 5672
+            - containerPort: 15672
+          env:
+            - name: RABBITMQ_DEFAULT_USER
+              value: "guest"
+            - name: RABBITMQ_DEFAULT_PASS
+              value: "guest"
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: app
+  namespace: healthcare
+spec:
+  type: NodePort
+  selector:
+    app: app
+  ports:
+    - port: 8000
+      targetPort: 8000
+      nodePort: 30080
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: app
+  namespace: healthcare
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: app
+  template:
+    metadata:
+      labels:
+        app: app
+    spec:
+      containers:
+        - name: app
+          image: healthcare-app:latest
+          imagePullPolicy: IfNotPresent
+          ports:
+            - containerPort: 8000
+          env:
+            - name: SECRET_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: app-secrets
+                  key: SECRET_KEY
+            - name: DATABASE_URL
+              valueFrom:
+                secretKeyRef:
+                  name: db-url
+                  key: DATABASE_URL
+            - name: REDIS_URL
+              value: "redis://redis:6379/0"
+            - name: RABBITMQ_URL
+              valueFrom:
+                secretKeyRef:
+                  name: rabbitmq-url
+                  key: RABBITMQ_URL
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: notification
+  namespace: healthcare
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: notification
+  template:
+    metadata:
+      labels:
+        app: notification
+    spec:
+      containers:
+        - name: notification
+          image: healthcare-notification:latest
+          imagePullPolicy: IfNotPresent
+          env:
+            - name: RABBITMQ_URL
+              valueFrom:
+                secretKeyRef:
+                  name: rabbitmq-url
+                  key: RABBITMQ_URL
+            - name: SMTP_SERVER
+              valueFrom:
+                secretKeyRef:
+                  name: smtp-secrets
+                  key: SMTP_SERVER
+            - name: SMTP_PORT
+              valueFrom:
+                secretKeyRef:
+                  name: smtp-secrets
+                  key: SMTP_PORT
+            - name: SMTP_USERNAME
+              valueFrom:
+                secretKeyRef:
+                  name: smtp-secrets
+                  key: SMTP_USERNAME
+            - name: SMTP_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: smtp-secrets
+                  key: SMTP_PASSWORD
+            - name: EMAIL_FROM
+              valueFrom:
+                secretKeyRef:
+                  name: smtp-secrets
+                  key: EMAIL_FROM

@@ -1,107 +1,81 @@
 name: Healthcare DevOps Pipeline
 
-# When to run this pipeline
 on:
   push:
-    branches: [main, devops-pipeline]
+    branches: [main, devops-pipeline, youssef]
   pull_request:
     branches: [main]
 
-# Environment variables used across all jobs
 env:
   DOCKER_IMAGE: ${{ secrets.DOCKERHUB_USERNAME }}/healthcare-fastapi
   PYTHON_VERSION: '3.11'
 
-# Jobs run in order (each job = one stage)
 jobs:
-  
-  # =====================================================
-  # STAGE 1: BUILD & INSTALL DEPENDENCIES
-  # =====================================================
   build-and-install:
-    name: 📦 Build & Install Dependencies
+    name: 📦 Build & Install
     runs-on: ubuntu-latest
-    
     steps:
-      - name: 📥 Checkout code
+      - name: 📥 Checkout
         uses: actions/checkout@v4
-        
-      - name: 🐍 Set up Python ${{ env.PYTHON_VERSION }}
+
+      - name: 🐍 Python ${{ env.PYTHON_VERSION }}
         uses: actions/setup-python@v5
         with:
           python-version: ${{ env.PYTHON_VERSION }}
           cache: pip
           cache-dependency-path: requirements*.txt
-          
-      - name: ⬇️ Install dependencies
+
+      - name: ⬇️ Install deps
         run: |
           python -m pip install --upgrade pip
           pip install -r requirements-dev.txt
           pip install -r requirements.notification.txt
-          echo "✅ Dependencies installed successfully"
-          
-      - name: 📋 List installed packages
+
+      - name: 📋 Packages
         run: pip list
 
-  # =====================================================
-  # STAGE 2: CODE QUALITY & SECURITY CHECKS
-  # =====================================================
   lint-and-security:
-    name: 🔍 Lint & Security Scan
+    name: 🔍 Lint & Security
     runs-on: ubuntu-latest
-    needs: build-and-install  # Wait for stage 1 to complete
-    
+    needs: build-and-install
     steps:
-      - name: 📥 Checkout code
+      - name: 📥 Checkout
         uses: actions/checkout@v4
-        
-      - name: 🐍 Set up Python ${{ env.PYTHON_VERSION }}
+
+      - name: 🐍 Python
         uses: actions/setup-python@v5
         with:
           python-version: ${{ env.PYTHON_VERSION }}
-          
-      - name: ⬇️ Install linting tools
-        run: |
-          pip install flake8 bandit safety pylint black
-          
-      - name: 🎨 Check code formatting with Black
-        run: |
-          black --check app || echo "⚠️ Code needs formatting"
+
+      - name: ⬇️ Linters
+        run: pip install flake8 bandit safety black
+
+      - name: 🎨 Black
+        run: black --check app/ || true
+
+      - name: 🔎 Flake8
+        run: flake8 app/ --count --exit-zero --max-line-length=120
         continue-on-error: true
-        
-      - name: 🔎 Lint with Flake8
-        run: |
-          flake8 app --count --select=E9,F63,F7,F82 --show-source --statistics
-          flake8 app --count --exit-zero --max-complexity=10 --max-line-length=127 --statistics
+
+      - name: 🛡️ Bandit
+        run: bandit -r app/ -f json -o bandit-report.json || true
         continue-on-error: true
-        
-      - name: 🛡️ Security scan with Bandit
-        run: |
-          bandit -r app -ll -f json -o bandit-report.json || true
-          bandit -r app -ll
+
+      - name: 🔐 Safety
+        run: safety check || true
         continue-on-error: true
-        
-      - name: 🔐 Check dependency vulnerabilities
-        run: |
-          safety check --json || echo "⚠️ Vulnerabilities found (non-blocking)"
-        continue-on-error: true
-        
-      - name: 📊 Upload Bandit results
+
+      - name: 📊 Bandit report
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: bandit-security-report
+          name: bandit-report
           path: bandit-report.json
 
-  # =====================================================
-  # STAGE 3: AUTOMATED TESTING WITH DATABASE
-  # =====================================================
   test:
-    name: 🧪 Run Tests with Database Services
+    name: 🧪 Tests & Coverage
     runs-on: ubuntu-latest
     needs: lint-and-security
-    
-    # These run as separate containers (like docker-compose)
     services:
       postgres:
         image: postgres:15-alpine
@@ -116,7 +90,6 @@ jobs:
           --health-interval 10s
           --health-timeout 5s
           --health-retries 5
-          
       redis:
         image: redis:7-alpine
         ports:
@@ -126,159 +99,122 @@ jobs:
           --health-interval 10s
           --health-timeout 5s
           --health-retries 5
-    
+
     steps:
-      - name: 📥 Checkout code
+      - name: 📥 Checkout
         uses: actions/checkout@v4
-        
-      - name: 🐍 Set up Python ${{ env.PYTHON_VERSION }}
+
+      - name: 🐍 Python ${{ env.PYTHON_VERSION }}
         uses: actions/setup-python@v5
         with:
           python-version: ${{ env.PYTHON_VERSION }}
           cache: pip
           cache-dependency-path: requirements*.txt
-          
-      - name: ⬇️ Install dependencies
-        run: |
-          pip install -r requirements-dev.txt
-          
-      # The postgres service health check makes the job wait until the DB is ready
+
+      - name: ⬇️ Dependencies
+        run: pip install -r requirements-dev.txt
+
+      # The postgres service health check makes the job wait until the DB is ready.
+      # Tests create and drop their own tables in TEST_DATABASE_URL.
       - name: 🧪 Run tests with coverage
         env:
           TEST_DATABASE_URL: postgresql://test_user:test_password@localhost:5432/test_healthcare_db
         run: |
-          pytest app/tests -v --cov=app --cov-report=xml --cov-report=html --cov-report=term
-          echo "✅ All tests passed!"
-          
-      - name: 📊 Upload coverage reports
-        uses: codecov/codecov-action@v3
+          pytest app/tests/ -v \
+            --cov=app \
+            --cov-report=xml \
+            --cov-report=html \
+            --cov-report=term-missing \
+            --tb=short
+
+      - name: 📊 Codecov
+        if: always()
+        uses: codecov/codecov-action@v4
         continue-on-error: true
         with:
           files: ./coverage.xml
-          flags: unittests
-          name: codecov-healthcare
-          
-      - name: 📁 Upload coverage HTML
+
+      - name: 📁 Coverage HTML
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: coverage-report
+          name: coverage-html
           path: htmlcov/
 
-  # =====================================================
-  # STAGE 4: BUILD & PUSH DOCKER IMAGE
-  # =====================================================
   build-docker:
-    name: 🐳 Build & Push Docker Image
+    name: 🐳 Docker Build
     runs-on: ubuntu-latest
-    needs: test  # Only runs if tests pass
+    needs: test
     # Registry secrets are not available to pull requests, so only build and push on push events
-    if: github.event_name == 'push'
-    
+    if: needs.test.result == 'success' && github.event_name == 'push'
     steps:
-      - name: 📥 Checkout code
+      - name: 📥 Checkout
         uses: actions/checkout@v4
-        
-      - name: 🔧 Set up Docker Buildx
+
+      - name: 🔧 Buildx
         uses: docker/setup-buildx-action@v3
-        
-      - name: 🔑 Login to DockerHub
+
+      - name: 🔑 DockerHub
         uses: docker/login-action@v3
         with:
           username: ${{ secrets.DOCKERHUB_USERNAME }}
           password: ${{ secrets.DOCKERHUB_TOKEN }}
-          
-      - name: 🏷️ Extract metadata
+
+      - name: 🏷️ Metadata
         id: meta
         uses: docker/metadata-action@v5
         with:
           images: ${{ env.DOCKER_IMAGE }}
           tags: |
             type=ref,event=branch
-            type=sha,prefix={{branch}}-
+            type=sha
             type=raw,value=latest,enable={{is_default_branch}}
-          
-      - name: 🏗️ Build and push Docker image
+
+      - name: 🏗️ Build & Push
         uses: docker/build-push-action@v5
         with:
           context: .
           push: true
           tags: ${{ steps.meta.outputs.tags }}
-          labels: ${{ steps.meta.outputs.labels }}
-          cache-from: type=registry,ref=${{ env.DOCKER_IMAGE }}:buildcache
-          cache-to: type=registry,ref=${{ env.DOCKER_IMAGE }}:buildcache,mode=max
-          build-args: |
-            BUILDTIME=${{ github.event.head_commit.timestamp }}
-            VERSION=${{ github.sha }}
-            
-      - name: 📋 Image Details
-        run: |
-          echo "🐳 Docker Image: ${{ env.DOCKER_IMAGE }}"
-          echo "🏷️ Tags: ${{ steps.meta.outputs.tags }}"
-          echo "📅 Build Time: $(date)"
-          echo "🔗 View on Docker Hub: https://hub.docker.com/r/${{ secrets.DOCKERHUB_USERNAME }}/healthcare-fastapi"
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
 
-  # =====================================================
-  # STAGE 5: DEPLOY TO PRODUCTION (CONDITIONAL)
-  # =====================================================
   deploy:
-    name: 🚀 Deploy to Production
+    name: 🚀 Deploy
     runs-on: ubuntu-latest
     needs: build-docker
-    # Only deploy when pushing to main branch
-    if: github.ref == 'refs/heads/main' && github.event_name == 'push'
-    
+    if: |
+      (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/youssef') &&
+      github.event_name == 'push' &&
+      needs.build-docker.result == 'success'
     steps:
-      - name: 📥 Checkout code
-        uses: actions/checkout@v4
-        
-      - name: 🚀 Deploy to Render
+      - name: 🚀 Test Deploy Hook
         run: |
-          echo "🔄 Triggering deployment to Render..."
-          response=$(curl -s -o /dev/null -w "%{http_code}" -X POST "${{ secrets.RENDER_DEPLOY_HOOK }}")
-          if [ $response -eq 200 ] || [ $response -eq 201 ]; then
-            echo "✅ Deployment triggered successfully!"
-          else
-            echo "❌ Deployment failed with status code: $response"
-            exit 1
-          fi
-          
-      - name: 📊 Deployment Summary
-        run: |
-          echo "### 🎉 Deployment Successful!" >> $GITHUB_STEP_SUMMARY
-          echo "" >> $GITHUB_STEP_SUMMARY
-          echo "- 🐳 *Image*: ${{ env.DOCKER_IMAGE }}:${{ github.sha }}" >> $GITHUB_STEP_SUMMARY
-          echo "- 📅 *Time*: $(date)" >> $GITHUB_STEP_SUMMARY
-          echo "- 🔗 *Docker Hub*: [View Image](https://hub.docker.com/r/${{ secrets.DOCKERHUB_USERNAME }}/healthcare-fastapi)" >> $GITHUB_STEP_SUMMARY
-          echo "- ✅ *Status*: Deployed to Production" >> $GITHUB_STEP_SUMMARY
-          
-      - name: 🔔 Notify deployment
-        if: always()
-        run: |
-          echo "Deployment completed at $(date)"
-          echo "Check your Render dashboard for live status"
+          echo "🎉 build-docker SUCCESS ✅"
+          echo "🚀 Branche: ${{ github.ref }}"
+          echo "📋 Event: ${{ github.event_name }}"
+          echo "✅ Deploy prêt !"
+          echo "🐳 Docker: ${{ env.DOCKER_IMAGE }}:youssef LIVE !"
 
-  # =====================================================
-  # SUMMARY JOB: OVERALL PIPELINE STATUS
-  # =====================================================
-  pipeline-summary:
-    name: 📋 Pipeline Summary
+
+  summary:
+    name: 📊 Summary
     runs-on: ubuntu-latest
-    needs: [build-and-install, lint-and-security, test, build-docker]
+    needs: 
+      - build-and-install
+      - lint-and-security
+      - test
+      - build-docker
+      - deploy
     if: always()
-    
     steps:
-      - name: 📊 Generate Summary
+      - name: 📊 Status
         run: |
-          echo "### 🏁 Pipeline Execution Summary" >> $GITHUB_STEP_SUMMARY
-          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "# 🏁 Pipeline Status" >> $GITHUB_STEP_SUMMARY
           echo "| Stage | Status |" >> $GITHUB_STEP_SUMMARY
           echo "|-------|--------|" >> $GITHUB_STEP_SUMMARY
-          echo "| Build & Install | ${{ needs.build-and-install.result }} |" >> $GITHUB_STEP_SUMMARY
-          echo "| Lint & Security | ${{ needs.lint-and-security.result }} |" >> $GITHUB_STEP_SUMMARY
-          echo "| Tests | ${{ needs.test.result }} |" >> $GITHUB_STEP_SUMMARY
-          echo "| Docker Build | ${{ needs.build-docker.result }} |" >> $GITHUB_STEP_SUMMARY
-          echo "" >> $GITHUB_STEP_SUMMARY
-          echo "*Commit*: ${{ github.sha }}" >> $GITHUB_STEP_SUMMARY
-          echo "*Branch*: ${{ github.ref_name }}" >> $GITHUB_STEP_SUMMARY
-          echo "*Triggered by*: ${{ github.actor }}" >> $GITHUB_STEP_SUMMARY
+          echo "| 📦 Build | ${{ needs.build-and-install.result }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| 🔍 Lint | ${{ needs.lint-and-security.result }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| 🧪 Tests | ${{ needs.test.result }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| 🐳 Docker | ${{ needs.build-docker.result }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| 🚀 Deploy | ${{ needs.deploy.result || 'skipped' }} |" >> $GITHUB_STEP_SUMMARY

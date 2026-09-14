@@ -313,6 +313,43 @@ See the `LICENSE` file for more information.
 
 ---
 
+## 📮 Booking Example
+
+`curl`:
+```bash
+curl -X POST http://localhost:8000/api/appointments/ \
+  -H "Authorization: Bearer <token_jwt>" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "patient_id": 1,
+    "doctor_id": 2,
+    "start_time": "2030-12-03T10:00:00",
+    "end_time": "2030-12-03T10:30:00",
+    "notes": "Consulta preventiva"
+  }'
+```
+
+Python:
+```python
+import requests
+
+url = "http://localhost:8000/api/appointments/"
+headers = {"Authorization": "Bearer <token_jwt>"}
+payload = {
+    "patient_id": 1,
+    "doctor_id": 2,
+    "start_time": "2030-12-03T10:00:00",
+    "end_time": "2030-12-03T10:30:00",
+    "notes": "Consulta preventiva",
+}
+response = requests.post(url, json=payload, headers=headers)
+print(response.status_code, response.json())
+```
+
+See `API_EXAMPLES.http` for more requests.
+
+---
+
 ### 🏥 Built with ❤️ for Modern Healthcare Management
 
 Delivering secure, scalable healthcare APIs with cutting-edge technology.

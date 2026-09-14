@@ -1,0 +1,10 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: healthcare-config
+  namespace: {{ .Values.namespace }}
+data:
+  DATABASE_URL: {{ .Values.config.databaseUrl }}
+  REDIS_URL: {{ .Values.config.redisUrl }}
+  RABBITMQ_URL: {{ .Values.config.rabbitmqUrl }}
+  SECRET_KEY: {{ .Values.config.secretKey }}
