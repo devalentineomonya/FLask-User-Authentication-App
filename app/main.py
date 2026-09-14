@@ -1,23 +1,69 @@
+import logging
+from contextlib import asynccontextmanager
+
 from fastapi import FastAPI, Depends, HTTPException, status
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.openapi.utils import get_openapi
+from sqlalchemy import text
 from sqlalchemy.orm import Session
 import uvicorn
-from app.api.routes import patient_router, doctor_router, appointment_router, auth_router
+
+from app.api.routes import (
+    appointment_router,
+    auth_router,
+    doctor_router,
+    medical_record_router,
+    patient_router,
+    user_router,
+)
+from app.core.cache import CacheMiddleware
 from app.core.config import settings
-from app.db.session import engine, get_db
+from app.core.rate_limiter import RateLimiter
+from app.crud.crud_user import user
+from app.db.session import SessionLocal, engine, get_db
 from app.db import models
 from app.api.deps import get_current_user
-from sqlalchemy import text
+from app.schemas.user import UserCreate, UserRole
 
-models.Base.metadata.create_all(bind=engine)
+logger = logging.getLogger(__name__)
+
+
+def create_first_admin() -> None:
+    if not (settings.FIRST_ADMIN_EMAIL and settings.FIRST_ADMIN_PASSWORD):
+        return
+    with SessionLocal() as db:
+        if user.get_by_email(db, email=settings.FIRST_ADMIN_EMAIL):
+            return
+        if user.get_by_username(db, username="admin"):
+            logger.error("Cannot create initial admin: username 'admin' is already taken")
+            return
+        user.create(db, obj_in=UserCreate(
+            email=settings.FIRST_ADMIN_EMAIL,
+            username="admin",
+            password=settings.FIRST_ADMIN_PASSWORD,
+            role=UserRole.ADMIN,
+        ))
+        logger.info("Created initial admin user %s", settings.FIRST_ADMIN_EMAIL)
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    models.Base.metadata.create_all(bind=engine)
+    create_first_admin()
+    yield
+
 
 app = FastAPI(
-    title="Healthcare Appointment System",
+    title=settings.PROJECT_NAME,
     description="API for managing healthcare appointments",
     version="1.0.0",
+    lifespan=lifespan,
 )
 
+# Middleware added last runs first: CORS, then rate limiting, then caching
+if settings.CACHE_ENABLED:
+    app.add_middleware(CacheMiddleware)
+if settings.RATE_LIMIT_ENABLED:
+    app.add_middleware(RateLimiter)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=settings.CORS_ORIGINS,
@@ -26,77 +72,34 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Authentication router with no security
-app.include_router(auth_router, prefix="/api/auth", tags=["Authentication"])
+api = settings.API_V1_STR
+authenticated = [Depends(get_current_user)]
 
+# Authentication router has public login/register endpoints
+app.include_router(auth_router, prefix=f"{api}/auth", tags=["Authentication"])
+app.include_router(user_router, prefix=f"{api}/users", tags=["Users"], dependencies=authenticated)
+app.include_router(patient_router, prefix=f"{api}/patients", tags=["Patients"], dependencies=authenticated)
+app.include_router(doctor_router, prefix=f"{api}/doctors", tags=["Doctors"], dependencies=authenticated)
+app.include_router(appointment_router, prefix=f"{api}/appointments", tags=["Appointments"], dependencies=authenticated)
 app.include_router(
-    patient_router,
-    prefix="/api/patients",
-    tags=["Patients"],
-    dependencies=[Depends(get_current_user)]
+    medical_record_router, prefix=f"{api}/medical-records", tags=["Medical Records"], dependencies=authenticated
 )
 
-app.include_router(
-    doctor_router,
-    prefix="/api/doctors",
-    tags=["Doctors"],
-    dependencies=[Depends(get_current_user)]
-)
-
-app.include_router(
-    appointment_router,
-    prefix="/api/appointments",
-    tags=["Appointments"],
-    dependencies=[Depends(get_current_user)]
-)
-
-def custom_openapi():
-    if app.openapi_schema:
-        return app.openapi_schema
-
-    openapi_schema = get_openapi(
-        title=app.title,
-        version=app.version,
-        description=app.description,
-        routes=app.routes,
-    )
-
-    openapi_schema["components"] = {
-        "securitySchemes": {
-            "bearerAuth": {
-                "type": "http",
-                "scheme": "bearer",
-                "bearerFormat": "JWT",
-                "description": "Enter JWT token with 'Bearer ' prefix"
-            }
-        }
-    }
-
-    for path, path_item in openapi_schema["paths"].items():
-        if path == "/api/auth/login" or path == "/api/auth/register":
-            continue
-
-        for method in path_item.values():
-            method.setdefault("security", [{"bearerAuth": []}])
-
-    app.openapi_schema = openapi_schema
-    return app.openapi_schema
-
-app.openapi = custom_openapi
 
 @app.get("/", tags=["Root"])
 async def root():
     return {"message": "Welcome to the Healthcare Appointment System API /docs for docs"}
 
 @app.get("/health", tags=["Health"])
-async def health_check(db: Session = Depends(get_db)):
+def health_check(db: Session = Depends(get_db)):
     try:
         db.execute(text("SELECT 1"))
         return {"status": "healthy", "database": "connected"}
-    except Exception as e:
+    except Exception:
+        logger.exception("Health check failed")
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail=f"Service unhealthy: {str(e)}"
+            detail="Service unhealthy: database unavailable"
         )
 
 if __name__ == "__main__":

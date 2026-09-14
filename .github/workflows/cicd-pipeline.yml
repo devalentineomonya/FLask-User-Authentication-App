@@ -22,19 +22,14 @@ jobs:
         uses: actions/setup-python@v5
         with:
           python-version: ${{ env.PYTHON_VERSION }}
-
-      - name: 💾 Cache pip
-        uses: actions/cache@v4
-        with:
-          path: ~/.cache/pip
-          key: ${{ runner.os }}-pip-${{ hashFiles('requirements.txt') }}
-          restore-keys: |
-            ${{ runner.os }}-pip-
+          cache: pip
+          cache-dependency-path: requirements*.txt
 
       - name: ⬇️ Install deps
         run: |
           python -m pip install --upgrade pip
-          pip install -r requirements.txt
+          pip install -r requirements-dev.txt
+          pip install -r requirements.notification.txt
 
       - name: 📋 Packages
         run: pip list
@@ -113,75 +108,31 @@ jobs:
         uses: actions/setup-python@v5
         with:
           python-version: ${{ env.PYTHON_VERSION }}
-
-      - name: 💾 Cache pip
-        uses: actions/cache@v4
-        with:
-          path: ~/.cache/pip
-          key: ${{ runner.os }}-pip-${{ hashFiles('requirements.txt') }}
+          cache: pip
+          cache-dependency-path: requirements*.txt
 
       - name: ⬇️ Dependencies
-        run: |
-          pip install -r requirements.txt
-          pip install pytest pytest-cov pytest-asyncio "uvicorn[standard]" httpx
+        run: pip install -r requirements-dev.txt
 
-      - name: 🗃️ Wait PostgreSQL
-        run: |
-          for i in {1..30}; do
-            if pg_isready -h localhost -p 5432 -U test_user; then
-              echo "✅ PostgreSQL ready"
-              break
-            fi
-            echo "⏳ PostgreSQL ($i/30)"
-            sleep 2
-          done || exit 1
-
-      - name: 🔍 DEBUG Structure
-        run: |
-          echo "=== FILES ==="
-          find . -name "*.py" | head -20
-          echo "=== APP ==="
-          ls -la app/ || echo "No app/"
-          echo "=== TESTS ==="
-          find . -name "test*.py" | head -10
-
-      - name: 🗄️ Create DB Tables
-        env:
-          DATABASE_URL: postgresql://test_user:test_password@localhost:5432/test_healthcare_db
-          SQLALCHEMY_DATABASE_URL: postgresql://test_user:test_password@localhost:5432/test_healthcare_db
-          PYTHONPATH: .
-        run: |
-          cd app && python -c "
-          import sys, os
-          sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
-          from db.session import engine
-          from db.models import Base
-          Base.metadata.create_all(bind=engine)
-          print('✅ Tables created!')
-          " || echo '⚠️ Tables warning'
-
-
+      # The postgres service health check makes the job wait until the DB is ready.
+      # Tests create and drop their own tables in TEST_DATABASE_URL.
       - name: 🧪 Run tests with coverage
         env:
-          TEST: true
-          ENVIRONMENT: testing
-          DATABASE_URL: postgresql://test_user:test_password@localhost:5432/test_healthcare_db
-          SQLALCHEMY_DATABASE_URL: postgresql://test_user:test_password@localhost:5432/test_healthcare_db
-          REDIS_URL: redis://localhost:6379/0
-          SECRET_KEY: test_super_secret_key_very_long_for_ci_32_plus_chars_123456789
-          PYTHONPATH: ${{ github.workspace }}
+          TEST_DATABASE_URL: postgresql://test_user:test_password@localhost:5432/test_healthcare_db
         run: |
           pytest app/tests/ -v \
             --cov=app \
             --cov-report=xml \
+            --cov-report=html \
             --cov-report=term-missing \
-            --cov-fail-under=0 \
             --tb=short
+
       - name: 📊 Codecov
         if: always()
         uses: codecov/codecov-action@v4
+        continue-on-error: true
         with:
-          file: ./coverage.xml
+          files: ./coverage.xml
 
       - name: 📁 Coverage HTML
         if: always()
@@ -194,7 +145,8 @@ jobs:
     name: 🐳 Docker Build
     runs-on: ubuntu-latest
     needs: test
-    if: needs.test.result == 'success'
+    # Registry secrets are not available to pull requests, so only build and push on push events
+    if: needs.test.result == 'success' && github.event_name == 'push'
     steps:
       - name: 📥 Checkout
         uses: actions/checkout@v4

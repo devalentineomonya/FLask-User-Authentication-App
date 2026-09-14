@@ -8,6 +8,10 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
 COPY requirements.notification.txt .
 RUN pip install --no-cache-dir -r requirements.notification.txt
 
-COPY notification_service.py .
+RUN useradd -m -u 1000 appuser
+
+COPY --chown=appuser:appuser notification_service.py .
+
+USER appuser
 
 CMD ["python", "notification_service.py"]

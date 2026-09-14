@@ -1,6 +1,5 @@
 from sqlalchemy import Boolean, Column, ForeignKey, Integer, String, DateTime, Date, Time, Text
-from sqlalchemy.ext.declarative import declarative_base
-from sqlalchemy.orm import relationship
+from sqlalchemy.orm import declarative_base, relationship
 from sqlalchemy.sql import func
 import enum
 
@@ -65,7 +64,9 @@ class Doctor(Base):
 
     # Relationships
     appointments = relationship("Appointment", back_populates="doctor")
-    availabilities = relationship("Availability", back_populates="doctor")
+    availabilities = relationship(
+        "Availability", back_populates="doctor", cascade="all, delete-orphan"
+    )
 
 class Availability(Base):
     __tablename__ = "availabilities"

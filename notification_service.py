@@ -1,4 +1,5 @@
 import asyncio
+import html
 import json
 import logging
 import os
@@ -19,15 +20,22 @@ logging.basicConfig(
 )
 logger = logging.getLogger("notification_service")
 
+QUEUE_NAME = "notifications"
 RABBITMQ_URL = os.getenv("RABBITMQ_URL", "amqp://guest:guest@localhost:5672/")
-SMTP_SERVER = os.getenv("SMTP_SERVER", "smtp.example.com")
+# Leave SMTP_SERVER unset to log emails instead of sending them
+SMTP_SERVER = os.getenv("SMTP_SERVER", "")
 SMTP_PORT = int(os.getenv("SMTP_PORT", "587"))
-SMTP_USERNAME = os.getenv("SMTP_USERNAME", "user")
-SMTP_PASSWORD = os.getenv("SMTP_PASSWORD", "password")
+SMTP_USERNAME = os.getenv("SMTP_USERNAME") or None
+SMTP_PASSWORD = os.getenv("SMTP_PASSWORD") or None
 EMAIL_FROM = os.getenv("EMAIL_FROM", "noreply@example.com")
+CONNECT_RETRY_SECONDS = 5
 
 async def send_email(to: str, subject: str, body: str) -> None:
     """Send an email notification"""
+    if not SMTP_SERVER:
+        logger.info("SMTP_SERVER not configured; would send %r to %s", subject, to)
+        return
+
     try:
         message = MIMEMultipart()
         message["From"] = EMAIL_FROM
@@ -35,11 +43,16 @@ async def send_email(to: str, subject: str, body: str) -> None:
         message["Subject"] = subject
         message.attach(MIMEText(body, "html"))
 
-        smtp = aiosmtplib.SMTP(hostname=SMTP_SERVER, port=SMTP_PORT, use_tls=True)
-        await smtp.connect()
-        await smtp.login(SMTP_USERNAME, SMTP_PASSWORD)
-        await smtp.send_message(message)
-        await smtp.quit()
+        # Port 465 uses implicit TLS; other ports (587) upgrade with STARTTLS
+        await aiosmtplib.send(
+            message,
+            hostname=SMTP_SERVER,
+            port=SMTP_PORT,
+            username=SMTP_USERNAME,
+            password=SMTP_PASSWORD,
+            use_tls=SMTP_PORT == 465,
+            start_tls=None if SMTP_PORT == 465 else True,
+        )
 
         logger.info(f"Email sent to {to}")
     except Exception as e:
@@ -48,9 +61,9 @@ async def send_email(to: str, subject: str, body: str) -> None:
 def get_notification_content(notification: Dict[str, Any]) -> tuple:
     """Generate email subject and body based on notification type"""
     notification_type = notification.get("type")
-    patient_name = notification.get("patient_name", "Patient")
-    doctor_name = notification.get("doctor_name", "Doctor")
-    appointment_time = notification.get("appointment_time", "")
+    patient_name = html.escape(notification.get("patient_name", "Patient"))
+    doctor_name = html.escape(notification.get("doctor_name", "Doctor"))
+    appointment_time = html.escape(notification.get("appointment_time", ""))
 
     if notification_type == "created":
         subject = "Appointment Confirmation"
@@ -82,8 +95,9 @@ def get_notification_content(notification: Dict[str, Any]) -> tuple:
         <p>Thank you for choosing our healthcare services.</p>
         """
     elif notification_type == "status_updated":
-        status = notification.get("status", "updated")
-        subject = f"Appointment Status: {status.capitalize()}"
+        status = str(notification.get("status", "updated"))
+        subject = f"Appointment Status: {status.replace('_', ' ').capitalize()}"
+        status = html.escape(status.replace("_", " "))
         body = f"""
         <h2>Appointment Status Update</h2>
         <p>Dear {patient_name},</p>
@@ -117,14 +131,23 @@ async def process_notification(notification: Dict[str, Any]) -> None:
     except Exception as e:
         logger.error(f"Error processing notification: {e}")
 
+async def connect_with_retry() -> aio_pika.abc.AbstractRobustConnection:
+    while True:
+        try:
+            return await aio_pika.connect_robust(RABBITMQ_URL)
+        except Exception as e:
+            logger.warning(f"RabbitMQ unavailable ({e}); retrying in {CONNECT_RETRY_SECONDS}s")
+            await asyncio.sleep(CONNECT_RETRY_SECONDS)
+
 async def main() -> None:
     """Main function to consume messages from RabbitMQ"""
-    connection = await aio_pika.connect_robust(RABBITMQ_URL)
+    connection = await connect_with_retry()
 
     async with connection:
         channel = await connection.channel()
+        await channel.set_qos(prefetch_count=10)
 
-        queue = await channel.declare_queue("notifications", durable=True)
+        queue = await channel.declare_queue(QUEUE_NAME, durable=True)
 
         logger.info("Notification service started. Waiting for messages...")
 
@@ -133,7 +156,10 @@ async def main() -> None:
                 async with message.process():
                     try:
                         notification = json.loads(message.body.decode())
-                        logger.info(f"Received notification: {notification}")
+                        logger.info(
+                            "Received %s notification for appointment %s",
+                            notification.get("type"), notification.get("appointment_id")
+                        )
                         await process_notification(notification)
                     except Exception as e:
                         logger.error(f"Error processing message: {e}")

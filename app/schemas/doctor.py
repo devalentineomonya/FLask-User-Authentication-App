@@ -1,4 +1,4 @@
-from pydantic import BaseModel, EmailStr, Field
+from pydantic import BaseModel, ConfigDict, EmailStr, Field, model_validator
 from typing import Optional, List
 from datetime import datetime, time
 
@@ -28,8 +28,7 @@ class DoctorInDBBase(DoctorBase):
     created_at: datetime
     updated_at: Optional[datetime] = None
 
-    class Config:
-        orm_mode = True
+    model_config = ConfigDict(from_attributes=True)
 
 # Properties to return to client
 class Doctor(DoctorInDBBase):
@@ -47,7 +46,11 @@ class AvailabilityBase(BaseModel):
     is_available: bool = True
 
 class AvailabilityCreate(AvailabilityBase):
-    pass
+    @model_validator(mode="after")
+    def check_time_range(self):
+        if self.end_time <= self.start_time:
+            raise ValueError("end_time must be after start_time")
+        return self
 
 class AvailabilityUpdate(BaseModel):
     day_of_week: Optional[int] = Field(None, ge=0, le=6)
@@ -59,8 +62,7 @@ class AvailabilityInDBBase(AvailabilityBase):
     id: int
     doctor_id: int
 
-    class Config:
-        orm_mode = True
+    model_config = ConfigDict(from_attributes=True)
 
 class Availability(AvailabilityInDBBase):
     pass

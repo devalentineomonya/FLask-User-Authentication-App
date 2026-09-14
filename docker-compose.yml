@@ -4,7 +4,7 @@ services:
     image: postgres:15-alpine
     environment:
       POSTGRES_USER: healthcare_user
-      POSTGRES_PASSWORD: ${DB_PASSWORD}
+      POSTGRES_PASSWORD: ${DB_PASSWORD:?Set DB_PASSWORD in .env}
       POSTGRES_DB: healthcare_db
     volumes:
       - postgres_data:/var/lib/postgresql/data
@@ -27,14 +27,19 @@ services:
       timeout: 5s
       retries: 5
 
-  # RabbitMQ (already in project)
+  # RabbitMQ Message Broker
   rabbitmq:
     image: rabbitmq:3.12-management-alpine
     environment:
-      RABBITMQ_DEFAULT_USER: ${RABBITMQ_USER}
-      RABBITMQ_DEFAULT_PASS: ${RABBITMQ_PASSWORD}
+      RABBITMQ_DEFAULT_USER: ${RABBITMQ_USER:?Set RABBITMQ_USER in .env}
+      RABBITMQ_DEFAULT_PASS: ${RABBITMQ_PASSWORD:?Set RABBITMQ_PASSWORD in .env}
     networks:
       - healthcare-network
+    healthcheck:
+      test: ["CMD", "rabbitmq-diagnostics", "-q", "ping"]
+      interval: 10s
+      timeout: 10s
+      retries: 10
 
   # FastAPI Application
   app:
@@ -44,15 +49,39 @@ services:
     ports:
       - "8000:8000"
     environment:
+      ENVIRONMENT: production
       DATABASE_URL: postgresql://healthcare_user:${DB_PASSWORD}@db:5432/healthcare_db
       REDIS_URL: redis://redis:6379/0
       RABBITMQ_URL: amqp://${RABBITMQ_USER}:${RABBITMQ_PASSWORD}@rabbitmq:5672/
-      SECRET_KEY: ${SECRET_KEY}
+      SECRET_KEY: ${SECRET_KEY:?Set SECRET_KEY in .env}
+      FIRST_ADMIN_EMAIL: ${FIRST_ADMIN_EMAIL:-}
+      FIRST_ADMIN_PASSWORD: ${FIRST_ADMIN_PASSWORD:-}
     depends_on:
       db:
         condition: service_healthy
       redis:
         condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+    networks:
+      - healthcare-network
+
+  # Notification worker: consumes the RabbitMQ queue and sends emails
+  notification:
+    build:
+      context: .
+      dockerfile: Dockerfile.notification
+    environment:
+      RABBITMQ_URL: amqp://${RABBITMQ_USER}:${RABBITMQ_PASSWORD}@rabbitmq:5672/
+      SMTP_SERVER: ${SMTP_SERVER:-}
+      SMTP_PORT: ${SMTP_PORT:-587}
+      SMTP_USERNAME: ${SMTP_USERNAME:-}
+      SMTP_PASSWORD: ${SMTP_PASSWORD:-}
+      EMAIL_FROM: ${EMAIL_FROM:-noreply@example.com}
+    depends_on:
+      rabbitmq:
+        condition: service_healthy
+    restart: unless-stopped
     networks:
       - healthcare-network
 

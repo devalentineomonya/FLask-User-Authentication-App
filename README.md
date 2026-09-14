@@ -1,4 +1,4 @@
-﻿# Health Care Management System — FastAPI Backend
+# Health Care Management System — FastAPI Backend
 
 A modern, robust healthcare management API built with FastAPI — delivering secure, scalable, and efficient healthcare services with real-time notifications.
 
@@ -10,12 +10,14 @@ A modern, robust healthcare management API built with FastAPI — delivering sec
 
 ### Production Deployment
 ```bash
-# Clone and deploy in one command
-docker-compose up --build -d
+cp .env.example .env   # then set real passwords and SECRET_KEY
+docker compose up --build -d
 ```
 
 The API will be available at: [http://localhost:8000](http://localhost:8000)
 API Documentation: [http://localhost:8000/docs](http://localhost:8000/docs)
+
+Set `FIRST_ADMIN_EMAIL` / `FIRST_ADMIN_PASSWORD` in `.env` to have an admin account created on first startup.
 
 ---
 
@@ -47,53 +49,44 @@ API Documentation: [http://localhost:8000/docs](http://localhost:8000/docs)
 │   ├── api/
 │   │   ├── routes/           # API endpoint handlers
 │   │   │   ├── auth.py
-│   │   │   ├── appointment.py
+│   │   │   ├── user.py
+│   │   │   ├── patient.py
 │   │   │   ├── doctor.py
-│   │   │   └── patient.py
-│   │   └── deps.py           # Dependency injection
+│   │   │   ├── appointment.py
+│   │   │   └── medical_record.py
+│   │   └── deps.py           # Auth and role dependencies
 │   ├── core/                 # Core application logic
 │   │   ├── config.py         # Configuration management
-│   │   ├── security.py       # Authentication & authorization
-│   │   ├── cache.py          # Redis caching layer
-│   │   ├── rate_limiter.py   # Request rate limiting
-│   │   └── notifications.py  # Notification utilities
+│   │   ├── security.py       # JWT and password hashing
+│   │   ├── cache.py          # Redis response caching middleware
+│   │   ├── rate_limiter.py   # Redis rate limiting middleware
+│   │   ├── notifications.py  # Publishes appointment events to RabbitMQ
+│   │   └── timeutils.py      # UTC normalization
 │   ├── crud/                 # Database operations layer
-│   │   ├── crud_base.py      # Base CRUD operations
-│   │   ├── crud_user.py
-│   │   ├── crud_patient.py
-│   │   ├── crud_doctor.py
-│   │   └── crud_appointment.py
-│   ├── db/                   # Database layer
-│   │   ├── models.py         # SQLAlchemy models
-│   │   └── session.py        # Database session management
+│   ├── db/                   # SQLAlchemy models and session
 │   ├── schemas/              # Pydantic schemas
-│   │   ├── user.py
-│   │   ├── patient.py
-│   │   ├── doctor.py
-│   │   ├── appointment.py
-│   │   └── medical_record.py
 │   └── tests/                # Test suites
-│       ├── test_api.py
-│       ├── test_crud.py
-│       └── test_security.py
 ├── docker-compose.yml        # Multi-service orchestration
-├── Dockerfile               # Main application container
-├── Dockerfile.notification  # Notification worker container
-└── notification_service.py  # Async notification processor
+├── Dockerfile                # API container
+├── Dockerfile.notification   # Notification worker container
+├── notification_service.py   # Async notification worker (RabbitMQ → email)
+├── API_EXAMPLES.http         # Example requests
+└── .env.example              # Environment template
 ```
 
 ---
 
 ## 🐳 Docker Services
 
-The system runs as a multi-container application:
+The system runs as a multi-container application. Only the API port is published; the other services are reachable on the internal network.
 
 | Service | Purpose | Port | Health Check |
 |---------|---------|------|--------------|
 | **app** | FastAPI Application | 8000 | HTTP 200 on /health |
-| **db** | PostgreSQL Database | 5432 | `pg_isready` |
-| **redis** | Redis Cache | 6379 | `redis-cli ping` |
-| **rabbitmq** | Message Queue | 5672/15672 | Built-in |
+| **notification** | Email notification worker | – | Restarts on failure |
+| **db** | PostgreSQL Database | 5432 (internal) | `pg_isready` |
+| **redis** | Cache and rate limiting | 6379 (internal) | `redis-cli ping` |
+| **rabbitmq** | Message Queue | 5672 (internal) | `rabbitmq-diagnostics ping` |
 
 ---
 
@@ -102,13 +95,13 @@ The system runs as a multi-container application:
 ### Option 1: Docker (Recommended)
 ```bash
 # Production deployment
-docker-compose up --build -d
+docker compose up --build -d
 
 # View logs
-docker-compose logs -f app
+docker compose logs -f app notification
 
 # Stop services
-docker-compose down
+docker compose down
 ```
 
 ### Option 2: Local Development
@@ -120,11 +113,19 @@ source .venv/bin/activate  # Linux/Mac
 .\.venv\Scripts\Activate.ps1  # Windows
 
 # Install dependencies
-pip install -r requirements.txt
+pip install -r requirements-dev.txt
+
+# Point the app at your services (or put these in .env)
+export DATABASE_URL=postgresql://user:pass@localhost:5432/healthcare
+export SECRET_KEY=dev-secret
 
 # Run the application
 uvicorn app.main:app --reload --host 127.0.0.1 --port 8000
 ```
+
+Redis and RabbitMQ are optional locally: caching and rate limiting fail open, and notifications are logged as errors
+when RabbitMQ is unreachable. Disable them with `CACHE_ENABLED=false`, `RATE_LIMIT_ENABLED=false` and
+`NOTIFICATIONS_ENABLED=false`.
 
 ---
 
@@ -133,10 +134,10 @@ uvicorn app.main:app --reload --host 127.0.0.1 --port 8000
 ### Docker Commands
 | Command | Description |
 |---------|-------------|
-| `docker-compose up --build -d` | Build and start all services |
-| `docker-compose logs -f [service]` | Follow service logs |
-| `docker-compose down` | Stop and remove containers |
-| `docker-compose exec app [cmd]` | Execute command in app container |
+| `docker compose up --build -d` | Build and start all services |
+| `docker compose logs -f [service]` | Follow service logs |
+| `docker compose down` | Stop and remove containers |
+| `docker compose exec app [cmd]` | Execute command in app container |
 
 ### Development Commands
 | Command | Description |
@@ -150,43 +151,52 @@ uvicorn app.main:app --reload --host 127.0.0.1 --port 8000
 
 ## 🎯 Core Features
 
-- **🔐 Secure Authentication** – JWT-based auth with password hashing
-- **👥 Role-Based Access Control** – Patient, Doctor, and Admin roles
-- **📅 Appointment Management** – Schedule, reschedule, and cancel appointments
-- **⚡ Real-time Notifications** – Async notification system with RabbitMQ
-- **💾 Intelligent Caching** – Redis-powered response caching
-- **🚀 Rate Limiting** – Request throttling for API protection
+- **🔐 Secure Authentication** – JWT (HS256) bearer tokens, bcrypt password hashing
+- **👥 Role-Based Access Control** – Patient, Doctor, Staff and Admin roles
+- **📅 Appointment Management** – Availability windows, conflict detection, free slot lookup, rescheduling and cancellation
+- **🩺 Medical Records** – Doctor-authored records, readable by the patient
+- **⚡ Real-time Notifications** – Appointment events published to RabbitMQ and emailed by a worker
+- **💾 Caching** – Per-user Redis response caching, invalidated on writes
+- **🚀 Rate Limiting** – Per-IP request throttling
 - **📊 Health Checks** – Container and service health monitoring
-- **🔒 Security Hardened** – Password validation, SQL injection protection
+
+### API Overview
+
+| Prefix | Endpoints |
+|--------|-----------|
+| `/api/auth` | `POST /login`, `POST /register`, `GET /me` |
+| `/api/users` | Admin user management: list, get, update (role, active flag, linked profile) |
+| `/api/patients` | CRUD, `GET /me`, `GET /search?query=` |
+| `/api/doctors` | CRUD, `GET /specialization/{name}`, `POST/DELETE /{id}/availability` |
+| `/api/appointments` | CRUD, `PUT /{id}/status?status=`, `GET /doctor/{id}/available-slots?date=` |
+| `/api/medical-records` | CRUD, `GET /patient/{patient_id}` |
+
+All scheduling times are **UTC**. Timestamps with an offset are converted; timestamps without one are treated as UTC.
+Doctor availability is a weekly window (`day_of_week` 0 = Monday) and slots are 30 minutes.
+
+### Roles
+
+User accounts link to a patient or doctor profile through `reference_id`.
+
+| Role | Access |
+|------|--------|
+| **Patient** | Registers publicly, creates and edits their own profile, books/reschedules/cancels their own appointments, reads their own medical records |
+| **Doctor** | Reads patients, manages their own profile, availability and appointment statuses, creates and edits medical records |
+| **Staff** | Manages patients, doctors and all appointments; no medical record access |
+| **Admin** | Everything, including user management and creating non-patient accounts via `/api/auth/register` |
 
 ---
 
 ## 📦 Key Dependencies
 
-### Core Framework
-- `fastapi` – Modern, fast web framework
-- `uvicorn` – ASGI server implementation
-- `pydantic` – Data validation and settings management
-
-### Database & ORM
-- `sqlalchemy` – SQL toolkit and ORM
-- `asyncpg` – Async PostgreSQL driver
-- `alembic` – Database migrations
-
-### Security & Auth
-- `python-jose` – JWT implementation
-- `passlib` – Password hashing
-- `bcrypt` – Secure password hashing
-
-### Cache & Messaging
-- `redis` – Redis client for Python
-- `celery` – Distributed task queue
-- `pika` – RabbitMQ client
-
-### Utilities
-- `python-multipart` – Form data handling
-- `email-validator` – Email validation
-- `python-dotenv` – Environment variable management
+- `fastapi`, `uvicorn` – Web framework and ASGI server
+- `pydantic`, `pydantic-settings`, `email-validator` – Validation and settings
+- `sqlalchemy`, `psycopg2-binary` – ORM and PostgreSQL driver
+- `PyJWT`, `bcrypt` – Tokens and password hashing
+- `redis` – Caching and rate limiting
+- `aio-pika` – RabbitMQ publisher (API) and consumer (worker)
+- `aiosmtplib` – Email delivery (worker)
+- `pytest`, `pytest-cov`, `httpx` – Testing (`requirements-dev.txt`)
 
 ---
 
@@ -194,20 +204,30 @@ uvicorn app.main:app --reload --host 127.0.0.1 --port 8000
 
 ### Environment Variables
 ```bash
-# Database
-DATABASE_URL=postgresql://user:pass@db:5432/healthcare_db
+# Used by docker-compose.yml
 DB_PASSWORD=your_secure_password
-
-# Cache
-REDIS_URL=redis://redis:6379/0
-
-# Message Queue
-RABBITMQ_URL=amqp://user:pass@rabbitmq:5672/
 RABBITMQ_USER=admin
 RABBITMQ_PASSWORD=your_rabbitmq_password
+SECRET_KEY=your_jwt_secret_key          # required when ENVIRONMENT=production
 
-# Security
-SECRET_KEY=your_jwt_secret_key
+# Read by the app (compose sets these from the values above)
+DATABASE_URL=postgresql://user:pass@db:5432/healthcare_db
+REDIS_URL=redis://redis:6379/0
+RABBITMQ_URL=amqp://user:pass@rabbitmq:5672/
+ACCESS_TOKEN_EXPIRE_MINUTES=30
+CACHE_ENABLED=true
+RATE_LIMIT_ENABLED=true
+RATE_LIMIT_PER_MINUTE=60
+NOTIFICATIONS_ENABLED=true
+FIRST_ADMIN_EMAIL=admin@example.com
+FIRST_ADMIN_PASSWORD=change-me-please
+
+# Notification worker (leave SMTP_SERVER empty to log emails instead of sending)
+SMTP_SERVER=smtp.example.com
+SMTP_PORT=587
+SMTP_USERNAME=
+SMTP_PASSWORD=
+EMAIL_FROM=noreply@example.com
 ```
 
 ### Configuration Files
@@ -221,15 +241,17 @@ SECRET_KEY=your_jwt_secret_key
 ## 🚀 Deployment
 
 ### Production with Docker Compose
-1. Set environment variables in `.env` file
-2. Run `docker-compose up --build -d`
+1. Copy `.env.example` to `.env` and set real values
+2. Run `docker compose up --build -d`
 3. Access API at `http://your-server:8000`
-4. Monitor services with `docker-compose logs -f`
+4. Monitor services with `docker compose logs -f`
+
+Tables are created automatically on startup. There are no migrations yet, so schema changes to an existing
+database must be applied manually.
 
 ### Health Checks
 - API: `GET /health`
-- Database: Automatic health checks in compose
-- Redis: Automatic health checks in compose
+- Database, Redis, RabbitMQ: automatic health checks in compose
 
 ---
 
@@ -237,14 +259,17 @@ SECRET_KEY=your_jwt_secret_key
 
 - **Multi-stage Docker builds** for optimized image sizes
 - **Non-root user execution** for enhanced security
-- **Connection pooling** for database efficiency
+- **Connection pooling** with pre-ping for database efficiency
 - **Request rate limiting** to prevent abuse
 - **JWT token expiration** for session security
-- **Password strength validation** with bcrypt hashing
+- **Password length validation** (8–72 bytes) with bcrypt hashing
 
 ---
 
 ## 🧪 Testing
+
+Tests use a throwaway SQLite database by default and never read `DATABASE_URL`.
+Set `TEST_DATABASE_URL` to run them against PostgreSQL (CI does this).
 
 ```bash
 # Run all tests
@@ -255,6 +280,9 @@ pytest --cov=app --cov-report=html
 
 # Run specific test module
 pytest app/tests/test_api.py -v
+
+# Against PostgreSQL (the database is dropped and recreated)
+TEST_DATABASE_URL=postgresql://test:test@localhost:5432/test pytest
 ```
 
 ---
@@ -285,37 +313,43 @@ See the `LICENSE` file for more information.
 
 ---
 
-### 🏥 Built with ❤️ for Modern Healthcare Management
+## 📮 Booking Example
 
-Delivering secure, scalable healthcare APIs with cutting-edge technology.
-
-
-
-
-### curl -X POST \
-  http://localhost:8000/api/appointments \
+`curl`:
+```bash
+curl -X POST http://localhost:8000/api/appointments/ \
   -H "Authorization: Bearer <token_jwt>" \
   -H "Content-Type: application/json" \
   -d '{
     "patient_id": 1,
     "doctor_id": 2,
-    "date": "2025-12-01T10:00:00",
-    "reason": "Consulta preventiva"
+    "start_time": "2030-12-03T10:00:00",
+    "end_time": "2030-12-03T10:30:00",
+    "notes": "Consulta preventiva"
   }'
+```
 
-### import requests
+Python:
+```python
+import requests
 
-   url = "http://localhost:8000/api/appointments"
-   headers = {
-    "Authorization": "Bearer <token_jwt>",
-    "Content-Type": "application/json"
-   }  
-   payload = {
+url = "http://localhost:8000/api/appointments/"
+headers = {"Authorization": "Bearer <token_jwt>"}
+payload = {
     "patient_id": 1,
     "doctor_id": 2,
-    "date": "2025-12-01T10:00:00",
-    "reason": "Consulta preventiva"
-   }
-   response = requests.post(url, json=payload, headers=headers)
-   print(response.status_code, response.json())
+    "start_time": "2030-12-03T10:00:00",
+    "end_time": "2030-12-03T10:30:00",
+    "notes": "Consulta preventiva",
+}
+response = requests.post(url, json=payload, headers=headers)
+print(response.status_code, response.json())
+```
 
+See `API_EXAMPLES.http` for more requests.
+
+---
+
+### 🏥 Built with ❤️ for Modern Healthcare Management
+
+Delivering secure, scalable healthcare APIs with cutting-edge technology.

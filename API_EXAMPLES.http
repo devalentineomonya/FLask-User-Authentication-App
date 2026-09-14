@@ -1,46 +1,155 @@
-# API_EXAMPLES.http
+# API request examples for the VS Code REST Client / JetBrains HTTP Client.
+# Log in first, then copy the access_token into @token.
+# All times are UTC.
 
-```markdown
-# API Request Examples
+@baseUrl = http://localhost:8000
+@token = paste-access-token-here
 
-### Authentication
-```http
-POST http://localhost:8000/api/auth/login
+### Health check
+GET {{baseUrl}}/health
+
+### Register a patient account (public)
+POST {{baseUrl}}/api/auth/register
+Content-Type: application/json
+
+{
+  "email": "patient@example.com",
+  "username": "patient1",
+  "password": "securePassword123!"
+}
+
+### Log in
+POST {{baseUrl}}/api/auth/login
 Content-Type: application/json
 
 {
   "email": "patient@example.com",
   "password": "securePassword123!"
 }
-```
 
-### Patient Management
-```http
-GET http://localhost:8000/api/patients/me
+### Current user
+GET {{baseUrl}}/api/auth/me
 Authorization: Bearer {{token}}
-```
 
-### Doctor Availability
-```http
-POST http://localhost:8000/api/doctors/availability
+### Patient: create own profile (email must match the account)
+POST {{baseUrl}}/api/patients/
 Authorization: Bearer {{token}}
 Content-Type: application/json
 
 {
-  "start_time": "2024-03-01T09:00:00",
-  "end_time": "2024-03-01T17:00:00",
-  "recurring": true
+  "first_name": "John",
+  "last_name": "Doe",
+  "date_of_birth": "1990-01-01",
+  "email": "patient@example.com",
+  "phone": "1234567890",
+  "address": "123 Main St",
+  "insurance_provider": "Blue Cross",
+  "insurance_id": "BC123456"
 }
-```
 
-### Appointment Booking
-```http
-POST http://localhost:8000/api/appointments
+### Patient: own profile
+GET {{baseUrl}}/api/patients/me
+Authorization: Bearer {{token}}
+
+### Staff: search patients
+GET {{baseUrl}}/api/patients/search?query=doe
+Authorization: Bearer {{token}}
+
+### Admin: register a doctor account linked to doctor profile 1
+POST {{baseUrl}}/api/auth/register
 Authorization: Bearer {{token}}
 Content-Type: application/json
 
 {
-  "doctor_id": "550e8400-e29b-41d4-a716-446655440000",
-  "scheduled_time": "2024-03-05T14:30:00",
-  "reason": "Annual Checkup"
+  "email": "jane.smith@example.com",
+  "username": "drsmith",
+  "password": "securePassword123!",
+  "role": "doctor",
+  "reference_id": 1
+}
+
+### Staff/admin: create a doctor
+POST {{baseUrl}}/api/doctors/
+Authorization: Bearer {{token}}
+Content-Type: application/json
+
+{
+  "first_name": "Jane",
+  "last_name": "Smith",
+  "email": "jane.smith@example.com",
+  "phone": "0987654321",
+  "specialization": "Cardiology"
+}
+
+### Doctor availability: Tuesdays (day_of_week 1, Monday = 0) 09:00-17:00
+POST {{baseUrl}}/api/doctors/1/availability
+Authorization: Bearer {{token}}
+Content-Type: application/json
+
+{
+  "day_of_week": 1,
+  "start_time": "09:00:00",
+  "end_time": "17:00:00",
+  "is_available": true
+}
+
+### Available 30-minute slots for a doctor on a date
+GET {{baseUrl}}/api/appointments/doctor/1/available-slots?date=2030-03-05T00:00:00
+Authorization: Bearer {{token}}
+
+### Book an appointment
+POST {{baseUrl}}/api/appointments/
+Authorization: Bearer {{token}}
+Content-Type: application/json
+
+{
+  "patient_id": 1,
+  "doctor_id": 1,
+  "start_time": "2030-03-05T14:30:00",
+  "end_time": "2030-03-05T15:00:00",
+  "notes": "Annual checkup"
+}
+
+### List appointments (patients and doctors only see their own)
+GET {{baseUrl}}/api/appointments/?start_date=2030-03-01T00:00:00&end_date=2030-03-31T23:59:59
+Authorization: Bearer {{token}}
+
+### Reschedule an appointment
+PUT {{baseUrl}}/api/appointments/1
+Authorization: Bearer {{token}}
+Content-Type: application/json
+
+{
+  "start_time": "2030-03-05T15:00:00",
+  "end_time": "2030-03-05T15:30:00"
+}
+
+### Update appointment status
+PUT {{baseUrl}}/api/appointments/1/status?status=confirmed
+Authorization: Bearer {{token}}
+
+### Doctor: add a medical record
+POST {{baseUrl}}/api/medical-records/
+Authorization: Bearer {{token}}
+Content-Type: application/json
+
+{
+  "patient_id": 1,
+  "appointment_id": 1,
+  "diagnosis": "Hypertension",
+  "treatment": "Lifestyle changes",
+  "prescription": "Lisinopril 10mg"
+}
+
+### Patient medical records
+GET {{baseUrl}}/api/medical-records/patient/1
+Authorization: Bearer {{token}}
+
+### Admin: deactivate a user
+PUT {{baseUrl}}/api/users/2
+Authorization: Bearer {{token}}
+Content-Type: application/json
+
+{
+  "is_active": false
 }

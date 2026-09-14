@@ -1,86 +1,70 @@
+import asyncio
 import json
 import logging
 from typing import Optional
-from datetime import datetime
+
 import aio_pika
-import asyncio
+from sqlalchemy.orm import Session
 
 from app.core.config import settings
-from app.db.session import SessionLocal
 from app.crud.crud_appointment import appointment
-from app.crud.crud_patient import patient
-from app.crud.crud_doctor import doctor
 
 logger = logging.getLogger(__name__)
 
-async def send_to_queue(message: dict):
-    """Send a message to RabbitMQ queue"""
-    try:
-        connection = await aio_pika.connect_robust(settings.RABBITMQ_URL)
+QUEUE_NAME = "notifications"
+PUBLISH_TIMEOUT_SECONDS = 10
 
-        async with connection:
-            channel = await connection.channel()
 
-            queue = await channel.declare_queue("notifications", durable=True)
+async def send_to_queue(message: dict) -> None:
+    """Send a message to the RabbitMQ notifications queue"""
+    connection = await aio_pika.connect(settings.RABBITMQ_URL, timeout=PUBLISH_TIMEOUT_SECONDS)
+    async with connection:
+        channel = await connection.channel()
+        queue = await channel.declare_queue(QUEUE_NAME, durable=True)
+        await channel.default_exchange.publish(
+            aio_pika.Message(
+                body=json.dumps(message).encode(),
+                content_type="application/json",
+                delivery_mode=aio_pika.DeliveryMode.PERSISTENT
+            ),
+            routing_key=queue.name,
+        )
 
-            await channel.default_exchange.publish(
-                aio_pika.Message(
-                    body=json.dumps(message).encode(),
-                    delivery_mode=aio_pika.DeliveryMode.PERSISTENT
-                ),
-                routing_key=queue.name,
-            )
 
-            logger.info(f"Sent notification message: {message}")
-
-    except Exception as e:
-        logger.error(f"Failed to send message to queue: {e}")
-
-def send_appointment_notification(
+def build_appointment_message(
+    db: Session,
     appointment_id: int,
     notification_type: str,
-    patient_id: Optional[int] = None,
-    doctor_id: Optional[int] = None,
-    appointment_time: Optional[datetime] = None,
-    status: Optional[str] = None
-):
-    """Send notification about appointment changes"""
+    status: Optional[str] = None,
+) -> Optional[dict]:
+    """
+    Build a notification payload while the request's DB session is still open.
+    Call it before deleting an appointment so the details are still available.
+    """
+    details = appointment.get_with_details(db, id=appointment_id)
+    if not details:
+        logger.error("Appointment %s not found for notification", appointment_id)
+        return None
+
+    message = {
+        "type": notification_type,
+        "appointment_id": appointment_id,
+        "patient_email": details["patient_email"],
+        "patient_name": details["patient_name"],
+        "doctor_name": details["doctor_name"],
+        "appointment_time": details["start_time"].isoformat(),
+    }
+    if status:
+        message["status"] = status
+    return message
+
+
+def publish_notification(message: Optional[dict]) -> None:
+    """Publish a notification; meant to run as a FastAPI background task."""
+    if not message or not settings.NOTIFICATIONS_ENABLED:
+        return
     try:
-        db = SessionLocal()
-
-        if notification_type == "cancelled" and patient_id and doctor_id and appointment_time:
-            patient_obj = patient.get(db, id=patient_id)
-            doctor_obj = doctor.get(db, id=doctor_id)
-
-            message = {
-                "type": notification_type,
-                "appointment_id": appointment_id,
-                "patient_email": patient_obj.email,
-                "patient_name": f"{patient_obj.first_name} {patient_obj.last_name}",
-                "doctor_name": f"{doctor_obj.first_name} {doctor_obj.last_name}",
-                "appointment_time": appointment_time.isoformat(),
-            }
-        else:
-            appointment_obj = appointment.get_with_details(db, id=appointment_id)
-            if not appointment_obj:
-                logger.error(f"Appointment {appointment_id} not found for notification")
-                return
-
-            message = {
-                "type": notification_type,
-                "appointment_id": appointment_id,
-                "patient_email": appointment_obj["patient"].email,
-                "patient_name": appointment_obj["patient_name"],
-                "doctor_name": appointment_obj["doctor_name"],
-                "appointment_time": appointment_obj["start_time"].isoformat(),
-            }
-
-            if status:
-                message["status"] = status
-
-        asyncio.run(send_to_queue(message))
-
+        asyncio.run(asyncio.wait_for(send_to_queue(message), PUBLISH_TIMEOUT_SECONDS))
+        logger.info("Queued %s notification for appointment %s", message["type"], message["appointment_id"])
     except Exception as e:
-        logger.error(f"Error sending notification: {e}")
-    finally:
-        db.close()
+        logger.error("Failed to send notification to queue: %s", e)
